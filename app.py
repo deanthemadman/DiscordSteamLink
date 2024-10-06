@@ -47,7 +47,7 @@ app.register_blueprint(steam_blueprint, url_prefix="/steam_login")
 
 @app.route("/")
 def index():
-    return render_template('index.html')
+    return render_template('templates/index.html')
 
 @app.route("/discord_login")
 def discord_login():
@@ -62,7 +62,7 @@ def discord_login():
     if user:
         # Notify the user that their Discord account has already been registered
         flash("This Discord account is already registered.")
-        return render_template('already_registered.html')
+        return render_template('templates/already_registered.html')
     
     # If the user is not in the database, create a new entry for them
     new_user = User(discord_id=discord_id)

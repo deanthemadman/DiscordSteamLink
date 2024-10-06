@@ -10,9 +10,9 @@ app = Flask(__name__)
 app.secret_key = os.getenv("SECRET_KEY")
 
 database_pass = os.getenv("DATABASE_PASS")
-database_host = "hostname"
-database_user = "rootuser"
-database_name = "root"
+database_host = os.getenv("DATABASE_HOST")
+database_user = os.getenv("DATABASE_USER")
+database_name = os.getenv("DATABASE_NAME")
 
 # Database setup with MySQL
 DATABASE_URL = f'mysql+mysqlconnector://{database_user}:{database_pass}@{database_host}/{database_name}'

@@ -7,10 +7,15 @@ from sqlalchemy.orm import sessionmaker
 import os
 
 app = Flask(__name__)
-app.secret_key = "super_secret_key"
+app.secret_key = os.getenv("SECRET_KEY")
+
+database_pass = os.getenv("DATABASE_PASS")
+database_host = "hostname"
+database_user = "rootuser"
+database_name = "root"
 
 # Database setup with MySQL
-DATABASE_URL = "mysql+mysqlconnector://myapp_user:strong_password@localhost/myapp_db"
+DATABASE_URL = f'mysql+mysqlconnector://{database_user}:{database_pass}@{database_host}/{database_name}'
 Base = declarative_base()
 engine = create_engine(DATABASE_URL)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)

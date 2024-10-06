@@ -1,101 +1,111 @@
-from flask import Flask, redirect, url_for, session, flash, render_template
-from flask_dance.contrib.discord import make_discord_blueprint, discord
-from flask_dance.contrib.steam import make_steam_blueprint, steam
-from sqlalchemy import create_engine, Column, String
-from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy.orm import sessionmaker
 import os
+import requests
+from flask import Flask, redirect, url_for, session, jsonify, request
+from flask_dance.contrib.discord import make_discord_blueprint
+from flask_sqlalchemy import SQLAlchemy
+from dotenv import load_dotenv
 
+# Load environment variables from .env file
+load_dotenv()
+
+# Initialize Flask app
 app = Flask(__name__)
-app.secret_key = os.getenv("SECRET_KEY")
+app.secret_key = os.getenv('SECRET_KEY')
+app.config['SQLALCHEMY_DATABASE_URI'] = os.getenv('DATABASE_URL')
+db = SQLAlchemy(app)
 
-database_pass = os.getenv("DATABASE_PASS")
-database_host = os.getenv("DATABASE_HOST")
-database_user = os.getenv("DATABASE_USER")
-database_name = os.getenv("DATABASE_NAME")
-
-# Database setup with MySQL
-DATABASE_URL = f'mysql+mysqlconnector://{database_user}:{database_pass}@{database_host}/{database_name}'
-Base = declarative_base()
-engine = create_engine(DATABASE_URL)
-SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
-db_session = SessionLocal()
-
-# Define User model for MySQL
-class User(Base):
-    __tablename__ = 'users'
-    discord_id = Column(String, primary_key=True, index=True)
-    steam_id = Column(String, index=True)
-
-# Create the tables if they don't exist yet
-Base.metadata.create_all(bind=engine)
-
-# Discord OAuth2 setup
-discord_blueprint = make_discord_blueprint(
-    client_id=os.getenv("DISCORD_CLIENT_ID"),
-    client_secret=os.getenv("DISCORD_CLIENT_SECRET"),
-    redirect_to="discord_login"
+# Discord OAuth setup
+discord_bp = make_discord_blueprint(
+    client_id=os.getenv('DISCORD_CLIENT_ID'),
+    client_secret=os.getenv('DISCORD_CLIENT_SECRET'),
+    redirect_to='discord.login'
 )
-app.register_blueprint(discord_blueprint, url_prefix="/discord_login")
+app.register_blueprint(discord_bp, url_prefix='/discord')
 
-# Steam OAuth2 setup
-steam_blueprint = make_steam_blueprint(
-    api_key=os.getenv("STEAM_API_KEY"),
-    redirect_to="steam_login"
-)
-app.register_blueprint(steam_blueprint, url_prefix="/steam_login")
+# Create a model for your user data
+class User(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    discord_id = db.Column(db.String(255), unique=True)
+    steam_id = db.Column(db.String(255), unique=True)
 
-@app.route("/")
+# Route for index
+@app.route('/')
 def index():
-    return render_template('templates/index.html')
+    return '<a href="/discord/login">Login with Discord</a> <br><a href="/login/steam">Login with Steam</a>'
 
-@app.route("/discord_login")
+# Route for Discord login
+@app.route('/discord/login')
 def discord_login():
-    if not discord.authorized:
-        return redirect(url_for("discord.login"))
-    
-    discord_info = discord.get("/api/users/@me").json()
-    discord_id = discord_info["id"]
+    if not discord_bp.session.authorized:
+        return redirect(url_for('discord.login'))
 
-    # Check if the Discord ID is already in the database
-    user = db_session.query(User).filter_by(discord_id=discord_id).first()
-    if user:
-        # Notify the user that their Discord account has already been registered
-        flash("This Discord account is already registered.")
-        return render_template('templates/already_registered.html')
-    
-    # If the user is not in the database, create a new entry for them
+    resp = discord_bp.session.get('users/@me')
+    assert resp.ok, resp.text
+    user_info = resp.json()
+
+    discord_id = user_info['id']
+
+    # Check if user already exists in the database
+    existing_user = User.query.filter_by(discord_id=discord_id).first()
+    if existing_user:
+        return f'User already exists: {user_info["username"]}'
+
+    # Add new user to the database
     new_user = User(discord_id=discord_id)
-    db_session.add(new_user)
-    db_session.commit()
+    db.session.add(new_user)
+    db.session.commit()
 
-    return redirect(url_for("steam_login"))
+    return f'Logged in as: {user_info["username"]}'
 
-@app.route("/steam_login")
-def steam_login():
-    # Check if the user has logged into Discord
-    if not discord.authorized:
-        # If not, redirect them to Discord login
-        return redirect(url_for("discord.login"))
+# Steam OpenID setup
+STEAM_OPENID_URL = "https://steamcommunity.com/openid/login"
 
-    # If the user is logged in to Discord, proceed with Steam login
-    if not steam.authorized:
-        return redirect(url_for("steam.login"))
+@app.route('/login/steam')
+def login_steam():
+    return redirect(get_steam_openid_url())
+
+def get_steam_openid_url():
+    return f'{STEAM_OPENID_URL}?openid.ns=http://specs.openid.net/auth/2.0&openid.mode=checkid_setup&openid.return_to=http://localhost:8000/auth/steam/callback&openid.identity=http://specs.openid.net/auth/2.0/identifier_select&openid.claimed_id=http://specs.openid.net/auth/2.0/identifier_select'
+
+@app.route('/auth/steam/callback')
+def steam_callback():
+    steam_id = request.args.get('steamid')
     
-    steam_info = steam.get("/ISteamUser/GetPlayerSummaries/v0002").json()
-    steam_id = steam_info["response"]["players"][0]["steamid"]
+    if not steam_id:
+        return 'No Steam ID returned from authentication.'
 
-    # Ensure the session stores the user's Discord ID
-    discord_info = discord.get("/api/users/@me").json()
-    discord_id = discord_info["id"]
+    user_info = get_steam_user_info(steam_id)
 
-    # Store Steam ID in the database
-    user = db_session.query(User).filter_by(discord_id=discord_id).first()
-    if user:
-        user.steam_id = steam_id
-        db_session.commit()
+    # Check if the Steam ID exists in the database
+    existing_user = User.query.filter_by(steam_id=steam_id).first()
+    if existing_user:
+        return f'User already exists with Steam ID: {steam_id}'
 
-    return redirect(url_for("index"))
+    # Add new user to the database
+    new_user = User(steam_id=steam_id)
+    db.session.add(new_user)
+    db.session.commit()
 
-if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=80)
+    return f'Steam User ID: {user_info["steamid"]}'
+
+def get_steam_user_info(steam_id):
+    url = f'https://api.steampowered.com/ISteamUser/GetPlayerSummaries/v2/'
+    params = {
+        'key': os.getenv('STEAM_API_KEY'),
+        'steamids': steam_id
+    }
+    response = requests.get(url, params=params)
+    
+    if response.status_code == 200:
+        data = response.json()
+        return data['response']['players'][0]  # Returns user data
+    else:
+        print("Error:", response.status_code)
+        return None
+
+if __name__ == '__main__':
+    # Create the database tables if they don't exist
+    with app.app_context():
+        db.create_all()
+
+    app.run(host='0.0.0.0', port=8000)
